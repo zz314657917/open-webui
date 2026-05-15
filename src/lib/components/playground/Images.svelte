@@ -1,21 +1,29 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { onMount, getContext } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
 	import { goto } from '$app/navigation';
 
 	import { user } from '$lib/stores';
 	import { imageGenerations, imageEdits } from '$lib/apis/images';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import Image from '$lib/components/common/Image.svelte';
+	import ImageGenerationGroup from '$lib/components/chat/Messages/ResponseMessage/ImageGenerationGroup.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<Writable<i18nType>>('i18n');
 
 	let loaded = false;
 	let loading = false;
 
 	let prompt = '';
 	let sourceImages: string[] = [];
-	let generatedImages: { url: string }[] = [];
+	let generatedImageGroups: {
+		id: string;
+		prompt: string;
+		images: { type: string; url: string }[];
+	}[] = [];
 
 	let promptTextareaElement: HTMLTextAreaElement;
 	let fileInputElement: HTMLInputElement;
@@ -87,28 +95,17 @@
 
 			console.log('Result:', result);
 			if (result) {
-				generatedImages = [...result, ...generatedImages];
+				const images = result.map((image: { url: string }) => ({ ...image, type: 'image' }));
+				generatedImageGroups = [
+					{ id: crypto.randomUUID(), prompt, images },
+					...generatedImageGroups
+				];
 			}
 		} catch (error) {
 			console.error('Image generation/edit error:', error);
 			toast.error(`${error}`);
 		} finally {
 			loading = false;
-		}
-	};
-
-	const downloadImage = async (url: string, index: number) => {
-		try {
-			const response = await fetch(url);
-			const blob = await response.blob();
-			const blobUrl = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = blobUrl;
-			a.download = `image-${Date.now()}-${index}.png`;
-			a.click();
-			URL.revokeObjectURL(blobUrl);
-		} catch (error) {
-			toast.error($i18n.t('Failed to download image'));
 		}
 	};
 
@@ -131,35 +128,23 @@
 			>
 				<div class=" h-full w-full flex flex-col">
 					<div class="flex-1 p-1">
-						{#if generatedImages.length > 0}
-							<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-								{#each generatedImages as image, index}
-									<button
-										class="relative group cursor-pointer"
-										on:click={() => downloadImage(image.url, index)}
-									>
-										<img
-											src={image.url}
-											alt=""
-											class="w-full aspect-square object-cover rounded-lg border border-gray-100/30 dark:border-gray-850/30"
+						{#if generatedImageGroups.length > 0}
+							<div class="space-y-3">
+								{#each generatedImageGroups as group (group.id)}
+									{#if group.images.length > 1}
+										<ImageGenerationGroup
+											images={group.images}
+											alt={group.prompt}
+											className="w-full"
 										/>
-										<div
-											class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition rounded-lg flex items-center justify-center"
-										>
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												class="w-6 h-6 text-white"
-												viewBox="0 0 24 24"
-												fill="none"
-												stroke="currentColor"
-												stroke-width="2"
-											>
-												<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-												<polyline points="7,10 12,15 17,10" />
-												<line x1="12" y1="15" x2="12" y2="3" />
-											</svg>
-										</div>
-									</button>
+									{:else if group.images.length === 1}
+										{@const image = group.images[0]}
+										<Image
+											src={image.url}
+											alt={group.prompt}
+											imageClassName="w-full max-w-sm aspect-square object-cover rounded-lg border border-gray-100/30 dark:border-gray-850/30"
+										/>
+									{/if}
 								{/each}
 							</div>
 						{:else}
@@ -190,6 +175,7 @@
 										<button
 											class=" bg-white text-black border border-white rounded-full group-hover:visible invisible transition"
 											type="button"
+											aria-label={$i18n.t('Remove image')}
 											on:click={() => removeImage(index)}
 										>
 											<svg
@@ -228,7 +214,7 @@
 								}
 							}}
 							rows="2"
-						/>
+						></textarea>
 					</div>
 
 					<!-- Actions -->

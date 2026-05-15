@@ -3,8 +3,15 @@ import { browser, dev } from '$app/environment';
 
 export const APP_NAME = 'Open WebUI';
 
-export const WEBUI_HOSTNAME = browser ? (dev ? `${location.hostname}:8080` : ``) : '';
-export const WEBUI_BASE_URL = browser ? (dev ? `http://${WEBUI_HOSTNAME}` : ``) : ``;
+const DEV_WEBUI_BASE_URL = (import.meta.env.VITE_WEBUI_BASE_URL ?? '').trim();
+const DEV_WEBUI_PORT = (import.meta.env.VITE_WEBUI_PORT ?? '8080').trim();
+
+export const WEBUI_HOSTNAME = browser ? (dev ? `${location.hostname}:${DEV_WEBUI_PORT}` : ``) : '';
+export const WEBUI_BASE_URL = browser
+	? dev
+		? DEV_WEBUI_BASE_URL || `http://${WEBUI_HOSTNAME}`
+		: ``
+	: ``;
 export const WEBUI_API_BASE_URL = `${WEBUI_BASE_URL}/api/v1`;
 
 export const OLLAMA_API_BASE_URL = `${WEBUI_BASE_URL}/ollama`;

@@ -1023,47 +1023,58 @@
 			await WEBUI_NAME.set(backendConfig.name);
 
 			if ($config) {
-				await setupSocket($config.features?.enable_websocket ?? true);
-
 				const currentUrl = `${window.location.pathname}${window.location.search}`;
 				const encodedUrl = encodeURIComponent(currentUrl);
 
+				let sessionUser = null;
+
 				if (localStorage.token) {
 					// Get Session User Info
-					const sessionUser = await getSessionUser(localStorage.token).catch((error) => {
+					sessionUser = await getSessionUser(localStorage.token).catch((error) => {
 						toast.error(`${error}`);
 						return null;
 					});
+				} else {
+					sessionUser = await getSessionUser().catch(() => null);
+				}
 
-					if (sessionUser) {
-						await user.set(sessionUser);
-						try {
-							await config.set(await getBackendConfig());
-						} catch (error) {
-							console.error('Error refreshing backend config:', error);
-						}
+				if (sessionUser) {
+					if (sessionUser.token) {
+						localStorage.token = sessionUser.token;
+					}
+				}
 
-						// Keep user timezone in sync on every app load/refresh
-						const timezone = getUserTimezone();
-						if (timezone) {
-							updateUserTimezone(localStorage.token, timezone);
-						}
+				await setupSocket($config.features?.enable_websocket ?? true);
 
-						// Relay auth token to desktop app for API access
-						if (window.electronAPI?.send) {
-							window.electronAPI
-								.send({
-									type: 'token:update',
-									token: localStorage.token
-								})
-								.catch(() => {});
-						}
-					} else {
-						// Redirect Invalid Session User to /auth Page
-						localStorage.removeItem('token');
-						await goto(`/auth?redirect=${encodedUrl}`);
+				if (sessionUser) {
+					await user.set(sessionUser);
+					try {
+						await config.set(await getBackendConfig());
+					} catch (error) {
+						console.error('Error refreshing backend config:', error);
+					}
+
+					// Keep user timezone in sync on every app load/refresh
+					const timezone = getUserTimezone();
+					if (localStorage.token && timezone) {
+						updateUserTimezone(localStorage.token, timezone);
+					}
+
+					// Relay auth token to desktop app for API access
+					if (window.electronAPI?.send && localStorage.token) {
+						window.electronAPI
+							.send({
+								type: 'token:update',
+								token: localStorage.token
+							})
+							.catch(() => {});
 					}
 				} else {
+					if (localStorage.token) {
+						// Redirect Invalid Session User to /auth Page
+						localStorage.removeItem('token');
+					}
+
 					// Don't redirect if we're already on the auth page
 					// Needed because we pass in tokens from OAuth logins via URL fragments
 					if ($page.url.pathname !== '/auth') {

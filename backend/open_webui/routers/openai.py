@@ -515,6 +515,14 @@ async def get_filtered_models(models, user, db=None):
 
     filtered_models = []
     for model in models.get('data', []):
+        if (
+            model.get('connection_type') == 'sub2api'
+            or model.get('provider') == 'sub2api'
+            or model.get('owned_by') == 'sub2api'
+        ):
+            filtered_models.append(model)
+            continue
+
         model_info = model_infos.get(model['id'])
         if model_info:
             if user.id == model_info.user_id or model_info.id in accessible_model_ids:

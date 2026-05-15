@@ -286,7 +286,8 @@ async def sub2api_launch(
         db=db,
     ) or user
 
-    response = RedirectResponse(url='/', status_code=status.HTTP_302_FOUND)
+    webui_url = str(getattr(request.app.state.config, 'WEBUI_URL', '') or '').strip()
+    response = RedirectResponse(url=webui_url or '/', status_code=status.HTTP_302_FOUND)
     await create_session_response(request, user, db, response=response, set_cookie=True)
     return response
 

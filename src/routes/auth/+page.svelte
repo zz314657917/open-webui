@@ -116,7 +116,6 @@
 	};
 
 	const oauthCallbackHandler = async () => {
-		// Get the value of the 'token' cookie
 		function getCookie(name) {
 			const match = document.cookie.match(
 				new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)')
@@ -124,13 +123,12 @@
 			return match ? decodeURIComponent(match[1]) : null;
 		}
 
-		const token = getCookie('token');
-		if (!token) {
-			return;
-		}
+		const token = getCookie('token') || localStorage.token || '';
 
 		const sessionUser = await getSessionUser(token).catch((error) => {
-			toast.error(`${error}`);
+			if (token) {
+				toast.error(`${error}`);
+			}
 			return null;
 		});
 
@@ -138,7 +136,6 @@
 			return;
 		}
 
-		localStorage.token = token;
 		await setSessionUser(sessionUser, localStorage.getItem('redirectPath') || null);
 	};
 
@@ -191,7 +188,10 @@
 
 		if (sub2apiSSO.enabled) {
 			onboarding = false;
-		} else if (($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false) {
+		} else if (
+			($config?.features.auth_trusted_header ?? false) ||
+			$config?.features.auth === false
+		) {
 			await signInHandler();
 		} else {
 			onboarding = $config?.onboarding ?? false;
@@ -237,16 +237,16 @@
 								/>
 							</div>
 							<div class="mb-6">
-								<div class="text-2xl font-medium">前往 Sub2API 登录/注册并选择 API Key</div>
+								<div class="text-2xl font-medium">还差一步就可以开始生图</div>
 								<div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
-									Open WebUI 使用 Sub2API 账号和 API Key，当前页面不再单独登录。
+									先选择一个要使用的 API Key，选好后会自动回到聊天生图页面。
 								</div>
 							</div>
 							<a
 								class="block bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
 								href={sub2apiLaunchUrl}
 							>
-								前往 Sub2API
+								去选择 API Key
 							</a>
 						</div>
 					</div>

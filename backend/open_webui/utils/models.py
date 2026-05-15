@@ -443,6 +443,14 @@ async def get_filtered_models(models, user, db=None):
 
         filtered_models = []
         for model in models:
+            if (
+                model.get('connection_type') == 'sub2api'
+                or model.get('provider') == 'sub2api'
+                or model.get('owned_by') == 'sub2api'
+            ):
+                filtered_models.append(model)
+                continue
+
             if model.get('arena'):
                 meta = model.get('info', {}).get('meta', {})
                 access_grants = meta.get('access_grants', [])
