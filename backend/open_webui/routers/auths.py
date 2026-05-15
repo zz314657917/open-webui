@@ -5,7 +5,7 @@ import time
 import datetime
 import logging
 from aiohttp import ClientSession
-import urllib
+import urllib.parse
 
 
 from open_webui.models.auths import (
@@ -55,6 +55,7 @@ from open_webui.config import (
     OAUTH_MERGE_ACCOUNTS_BY_EMAIL,
 )
 from open_webui.utils.oauth import auth_manager_config
+from open_webui.utils.oauth import encrypt_data
 from pydantic import BaseModel
 
 from open_webui.utils.misc import parse_duration, validate_email_format
@@ -76,6 +77,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from open_webui.utils.webhook import post_webhook
 from open_webui.utils.access_control import get_permissions, has_permission
 from open_webui.utils.groups import apply_default_group_assignment
+from open_webui.utils.sub2api import (
+    SUB2API_REDEEM_SECRET,
+    SUB2API_REDEEM_URL,
+    SUB2API_SSO_ENABLED,
+    get_sub2api_public_config,
+)
 
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.rate_limit import RateLimiter
@@ -163,6 +170,126 @@ class SessionUserInfoResponse(SessionUserResponse, UserStatus):
     bio: Optional[str] = None
     gender: Optional[str] = None
     date_of_birth: Optional[datetime.date] = None
+
+
+@router.get('/sub2api/config')
+async def get_sub2api_config():
+    return get_sub2api_public_config()
+
+
+@router.get('/sub2api/launch')
+async def sub2api_launch(
+    request: Request,
+    token: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    if not SUB2API_SSO_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Sub2API SSO is disabled',
+        )
+    if not SUB2API_REDEEM_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Sub2API redeem secret is not configured',
+        )
+
+    async with ClientSession(trust_env=True) as session:
+        async with session.post(
+            SUB2API_REDEEM_URL,
+            json={'token': token},
+            headers={'X-Sub2API-OpenWebUI-Secret': SUB2API_REDEEM_SECRET},
+            ssl=AIOHTTP_CLIENT_SESSION_SSL,
+        ) as resp:
+            try:
+                payload = await resp.json()
+            except Exception:
+                payload = {'message': await resp.text()}
+
+            if resp.status >= 400:
+                detail = payload.get('message') or payload.get('detail') or 'Sub2API launch token is invalid'
+                return RedirectResponse(
+                    url=f'/auth?error={urllib.parse.quote(str(detail))}',
+                    status_code=status.HTTP_302_FOUND,
+                )
+
+    data = payload.get('data', payload)
+    sub2api_user = data.get('user') or {}
+    sub2api_key = data.get('api_key') or {}
+    sub2api_user_id = str(sub2api_user.get('id') or '')
+    if not sub2api_user_id or not sub2api_key.get('key') or not data.get('gateway_base_url'):
+        return RedirectResponse(
+            url='/auth?error=Sub2API%20launch%20payload%20is%20incomplete',
+            status_code=status.HTTP_302_FOUND,
+        )
+
+    email = (sub2api_user.get('email') or f'sub2api-{sub2api_user_id}@sub2api.local').lower()
+    name = sub2api_user.get('username') or email
+
+    user = await Users.get_user_by_oauth_sub('sub2api', sub2api_user_id, db=db)
+    if not user:
+        user = await Users.get_user_by_email(email, db=db)
+        if user:
+            await Users.update_user_oauth_by_id(user.id, 'sub2api', sub2api_user_id, db=db)
+
+    if not user:
+        user = await Auths.insert_new_auth(
+            email=email,
+            password=get_password_hash(str(uuid.uuid4())),
+            name=name,
+            role='user',
+            oauth={'sub2api': {'sub': sub2api_user_id}},
+            db=db,
+        )
+        if not user:
+            raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
+        await apply_default_group_assignment(
+            request.app.state.config.DEFAULT_GROUP_ID,
+            user.id,
+            db=db,
+        )
+    elif user.name != name:
+        user = await Users.update_user_by_id(user.id, {'name': name}, db=db) or user
+    if user.role == 'pending':
+        user = (
+            await Users.update_user_role_by_id(
+                user.id,
+                'user',
+                db=db,
+            )
+            or user
+        )
+
+    info = user.info or {}
+    info['sub2api'] = {
+        'api_key_encrypted': encrypt_data({'api_key': sub2api_key.get('key')}),
+        'api_key_id': sub2api_key.get('id'),
+        'bound_at': int(time.time()),
+    }
+    user = await Users.update_user_by_id(user.id, {'info': info}, db=db) or user
+
+    user = await Users.update_user_settings_by_id(
+        user.id,
+        {
+            'sub2api': {
+                'enabled': True,
+                'user_id': sub2api_user_id,
+                'api_key_id': sub2api_key.get('id'),
+                'api_key_name': sub2api_key.get('name') or '',
+                'group_id': sub2api_key.get('group_id'),
+                'group_name': sub2api_key.get('group_name') or '',
+                'group_platform': sub2api_key.get('group_platform') or '',
+                'gateway_base_url': data.get('gateway_base_url'),
+                'bound_at': int(time.time()),
+            }
+        },
+        db=db,
+    ) or user
+
+    webui_url = str(getattr(request.app.state.config, 'WEBUI_URL', '') or '').strip()
+    response = RedirectResponse(url=webui_url or '/', status_code=status.HTTP_302_FOUND)
+    await create_session_response(request, user, db, response=response, set_cookie=True)
+    return response
 
 
 @router.get('/', response_model=SessionUserInfoResponse)

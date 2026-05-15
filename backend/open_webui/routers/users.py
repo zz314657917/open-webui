@@ -40,6 +40,7 @@ from open_webui.utils.auth import (
     validate_password,
 )
 from open_webui.utils.access_control import get_permissions, has_permission
+from open_webui.utils.sub2api import redact_sub2api_info
 from open_webui.socket.main import disconnect_user_sessions
 
 log = logging.getLogger(__name__)
@@ -375,7 +376,7 @@ async def update_user_status_by_session_user(
 @router.get('/user/info', response_model=Optional[dict])
 async def get_user_info_by_session_user(user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
     # user already fetched by get_verified_user — no need to refetch
-    return user.info
+    return redact_sub2api_info(user.info)
 
 
 ############################
@@ -387,13 +388,14 @@ async def get_user_info_by_session_user(user=Depends(get_verified_user), db: Asy
 async def update_user_info_by_session_user(
     form_data: dict, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)
 ):
+    form_data = {key: value for key, value in form_data.items() if key != 'sub2api'}
     # Merges against the auth-time snapshot of user.info. The previous pre-merge
     # refetch only narrowed (did not eliminate) the lost-update window on concurrent
     # same-user writes; real safety needs row locking or a version column.
     existing_info = user.info or {}
     updated = await Users.update_user_by_id(user.id, {'info': {**existing_info, **form_data}}, db=db)
     if updated:
-        return updated.info
+        return redact_sub2api_info(updated.info)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

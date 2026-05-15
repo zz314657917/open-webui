@@ -30,6 +30,7 @@ from open_webui.routers.files import upload_file_handler, get_file_content_by_id
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.headers import include_user_info_headers
+from open_webui.utils.sub2api import get_user_sub2api_binding
 from open_webui.internal.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from open_webui.utils.images.comfyui import (
@@ -352,10 +353,17 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
 @router.get('/models')
 async def get_models(request: Request, user=Depends(get_verified_user)):
     try:
+        sub2api_binding = get_user_sub2api_binding(user)
+        if sub2api_binding:
+            return [
+                {'id': 'gpt-image-1', 'name': 'GPT-IMAGE 1'},
+                {'id': 'gpt-image-1.5', 'name': 'GPT-IMAGE 1.5'},
+            ]
+
         if request.app.state.config.IMAGE_GENERATION_ENGINE == 'openai':
             return [
-                {'id': 'dall-e-2', 'name': 'DALL·E 2'},
-                {'id': 'dall-e-3', 'name': 'DALL·E 3'},
+                {'id': 'dall-e-2', 'name': 'DALL-E 2'},
+                {'id': 'dall-e-3', 'name': 'DALL-E 3'},
                 {'id': 'gpt-image-1', 'name': 'GPT-IMAGE 1'},
                 {'id': 'gpt-image-1.5', 'name': 'GPT-IMAGE 1.5'},
             ]
@@ -546,20 +554,31 @@ async def image_generations(
 
     metadata = metadata or {}
 
-    model = await get_image_model(request)
+    sub2api_binding = get_user_sub2api_binding(user)
+    model = form_data.model if sub2api_binding and form_data.model else await get_image_model(request)
 
     try:
-        if request.app.state.config.IMAGE_GENERATION_ENGINE == 'openai':
+        if sub2api_binding or request.app.state.config.IMAGE_GENERATION_ENGINE == 'openai':
+            openai_key = (
+                sub2api_binding['api_key']
+                if sub2api_binding
+                else request.app.state.config.IMAGES_OPENAI_API_KEY
+            )
+            openai_base_url = (
+                sub2api_binding['gateway_base_url']
+                if sub2api_binding
+                else request.app.state.config.IMAGES_OPENAI_API_BASE_URL
+            )
             headers = {
-                'Authorization': f'Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}',
+                'Authorization': f'Bearer {openai_key}',
                 'Content-Type': 'application/json',
             }
 
             if ENABLE_FORWARD_USER_INFO_HEADERS:
                 headers = include_user_info_headers(headers, user)
 
-            url = f'{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/images/generations'
-            if request.app.state.config.IMAGES_OPENAI_API_VERSION:
+            url = f'{openai_base_url.rstrip("/")}/images/generations'
+            if not sub2api_binding and request.app.state.config.IMAGES_OPENAI_API_VERSION:
                 url = f'{url}?api-version={request.app.state.config.IMAGES_OPENAI_API_VERSION}'
 
             data = {
@@ -575,7 +594,7 @@ async def image_generations(
                     {}
                     if re.match(
                         IMAGE_URL_RESPONSE_MODELS_REGEX_PATTERN,
-                        request.app.state.config.IMAGE_GENERATION_MODEL,
+                        model,
                     )
                     else {'response_format': 'b64_json'}
                 ),

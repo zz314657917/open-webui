@@ -362,6 +362,10 @@ async def connect(sid, environ, auth):
                         'date_of_birth',
                         'bio',
                         'gender',
+                        'info',
+                        'oauth',
+                        'scim',
+                        'settings',
                     ]
                 ),
                 'last_seen_at': int(time.time()),
@@ -391,6 +395,10 @@ async def user_join(sid, data):
                 'date_of_birth',
                 'bio',
                 'gender',
+                'info',
+                'oauth',
+                'scim',
+                'settings',
             ]
         ),
         'last_seen_at': int(time.time()),

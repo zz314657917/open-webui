@@ -34,6 +34,8 @@
 	let mode = $config?.features.enable_ldap ? 'ldap' : 'signin';
 
 	let form = null;
+	let sub2apiSSO: { enabled: boolean; launch_url: string } = { enabled: false, launch_url: '' };
+	$: sub2apiLaunchUrl = sub2apiSSO.launch_url || '/';
 
 	let name = '';
 	let email = '';
@@ -114,7 +116,6 @@
 	};
 
 	const oauthCallbackHandler = async () => {
-		// Get the value of the 'token' cookie
 		function getCookie(name) {
 			const match = document.cookie.match(
 				new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)')
@@ -122,13 +123,12 @@
 			return match ? decodeURIComponent(match[1]) : null;
 		}
 
-		const token = getCookie('token');
-		if (!token) {
-			return;
-		}
+		const token = getCookie('token') || localStorage.token || '';
 
 		const sessionUser = await getSessionUser(token).catch((error) => {
-			toast.error(`${error}`);
+			if (token) {
+				toast.error(`${error}`);
+			}
 			return null;
 		});
 
@@ -136,7 +136,6 @@
 			return;
 		}
 
-		localStorage.token = token;
 		await setSessionUser(sessionUser, localStorage.getItem('redirectPath') || null);
 	};
 
@@ -182,11 +181,17 @@
 
 		await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
+		sub2apiSSO = $config?.features?.sub2api_sso ?? { enabled: false, launch_url: '' };
 
 		loaded = true;
 		setLogoImage();
 
-		if (($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false) {
+		if (sub2apiSSO.enabled) {
+			onboarding = false;
+		} else if (
+			($config?.features.auth_trusted_header ?? false) ||
+			$config?.features.auth === false
+		) {
 			await signInHandler();
 		} else {
 			onboarding = $config?.onboarding ?? false;
@@ -219,7 +224,33 @@
 			id="auth-container"
 		>
 			<div class="w-full px-10 min-h-screen flex flex-col text-center">
-				{#if ($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false}
+				{#if sub2apiSSO.enabled}
+					<div class="my-auto flex flex-col justify-center items-center">
+						<div class="sm:max-w-md my-auto pb-10 w-full dark:text-gray-100">
+							<div class="flex justify-center mb-6">
+								<img
+									id="logo"
+									crossorigin="anonymous"
+									src="{WEBUI_BASE_URL}/static/favicon.png"
+									class="size-24 rounded-full"
+									alt="{$WEBUI_NAME} logo"
+								/>
+							</div>
+							<div class="mb-6">
+								<div class="text-2xl font-medium">还差一步就可以开始生图</div>
+								<div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
+									先选择一个要使用的 API Key，选好后会自动回到聊天生图页面。
+								</div>
+							</div>
+							<a
+								class="block bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+								href={sub2apiLaunchUrl}
+							>
+								去选择 API Key
+							</a>
+						</div>
+					</div>
+				{:else if ($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false}
 					<div class=" my-auto pb-10 w-full sm:max-w-md">
 						<div
 							class="flex items-center justify-center gap-3 text-xl sm:text-2xl text-center font-medium dark:text-gray-200"

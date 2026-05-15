@@ -64,6 +64,7 @@ from open_webui.utils.session_pool import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers, get_custom_headers
 from open_webui.utils.anthropic import is_anthropic_url, get_anthropic_models
+from open_webui.utils.sub2api import get_user_sub2api_binding
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,18 @@ _STRIP_PROXY_HEADERS = frozenset({'Content-Encoding', 'Content-Length', 'Transfe
 def _clean_proxy_headers(raw_headers) -> dict:
     """Return a copy of *raw_headers* with stale encoding headers removed."""
     return {k: v for k, v in raw_headers.items() if k not in _STRIP_PROXY_HEADERS}
+
+
+def _openai_models_cache_key(_, user):
+    if not user:
+        return 'openai_all_models'
+    sub2api_binding = get_user_sub2api_binding(user)
+    if sub2api_binding:
+        return (
+            f'openai_all_models_sub2api_{user.id}_'
+            f'{sub2api_binding.get("api_key_id")}_{sub2api_binding.get("bound_at")}'
+        )
+    return f'openai_all_models_{user.id}'
 
 
 async def send_get_request(
@@ -368,6 +381,22 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
 
 async def get_all_models_responses(request: Request, user: UserModel) -> list:
+    sub2api_binding = get_user_sub2api_binding(user)
+    if sub2api_binding:
+        response = await get_models_request(
+            request,
+            sub2api_binding['gateway_base_url'],
+            sub2api_binding['api_key'],
+            user=user,
+            config={'connection_type': 'sub2api', 'provider': 'sub2api'},
+        )
+        if response and isinstance(response, dict):
+            for model in response.get('data', []):
+                model['connection_type'] = 'sub2api'
+                model['provider'] = 'sub2api'
+                model['urlIdx'] = 0
+        return [response]
+
     if not request.app.state.config.ENABLE_OPENAI_API:
         return []
 
@@ -486,6 +515,14 @@ async def get_filtered_models(models, user, db=None):
 
     filtered_models = []
     for model in models.get('data', []):
+        if (
+            model.get('connection_type') == 'sub2api'
+            or model.get('provider') == 'sub2api'
+            or model.get('owned_by') == 'sub2api'
+        ):
+            filtered_models.append(model)
+            continue
+
         model_info = model_infos.get(model['id'])
         if model_info:
             if user.id == model_info.user_id or model_info.id in accessible_model_ids:
@@ -528,10 +565,33 @@ async def get_openai_loaded_models(request: Request, models: dict, api_base_urls
 
 @cached(
     ttl=MODELS_CACHE_TTL,
-    key=lambda _, user: f'openai_all_models_{user.id}' if user else 'openai_all_models',
+    key=_openai_models_cache_key,
 )
 async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
     log.info('get_all_models()')
+
+    sub2api_binding = get_user_sub2api_binding(user)
+    if sub2api_binding:
+        responses = await get_all_models_responses(request, user=user)
+        model_list = []
+        if responses and responses[0]:
+            response = responses[0]
+            model_list = response if isinstance(response, list) else response.get('data', [])
+        models = {}
+        for model in model_list:
+            model_id = model.get('id') or model.get('name')
+            if model_id:
+                models[model_id] = {
+                    **model,
+                    'name': model.get('name', model_id),
+                    'owned_by': 'sub2api',
+                    'openai': model,
+                    'connection_type': 'sub2api',
+                    'provider': 'sub2api',
+                    'urlIdx': 0,
+                }
+        request.app.state.OPENAI_MODELS = models
+        return {'data': list(models.values())}
 
     if not request.app.state.config.ENABLE_OPENAI_API:
         return {'data': []}
@@ -605,6 +665,12 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
 @router.get('/models')
 @router.get('/models/{url_idx}')
 async def get_models(request: Request, url_idx: Optional[int] = None, user=Depends(get_verified_user)):
+    if get_user_sub2api_binding(user):
+        if url_idx is not None:
+            raise HTTPException(status_code=404, detail='Sub2API users use their bound API key connection')
+        models = await get_all_models(request, user=user)
+        return models
+
     if not request.app.state.config.ENABLE_OPENAI_API:
         raise HTTPException(status_code=503, detail='OpenAI API is disabled')
 
@@ -1102,6 +1168,7 @@ async def generate_chat_completion(
 
     model_id = form_data.get('model')
     model_info = await Models.get_model_by_id(model_id)
+    sub2api_binding = get_user_sub2api_binding(user)
 
     # Check model info and override the payload
     if model_info:
@@ -1122,7 +1189,7 @@ async def generate_chat_completion(
                 payload = await apply_system_prompt_to_body(system, payload, metadata, user)
 
         await check_model_access(user, model_info, bypass_filter)
-    else:
+    elif not sub2api_binding:
         await check_model_access(user, None, bypass_filter)
 
     # Check if model is already in app state cache to avoid expensive get_all_models() call
@@ -1140,13 +1207,20 @@ async def generate_chat_completion(
             detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
         )
 
-    # Get the API config for the model
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
+    if sub2api_binding:
+        api_config = {'connection_type': 'sub2api', 'provider': 'sub2api'}
+        url = sub2api_binding['gateway_base_url']
+        key = sub2api_binding['api_key']
+    else:
+        # Get the API config for the model
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(
+                request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+            ),  # Legacy support
+        )
+        url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+        key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     prefix_id = api_config.get('prefix_id', None)
     if prefix_id:
@@ -1160,9 +1234,6 @@ async def generate_chat_completion(
             'email': user.email,
             'role': user.role,
         }
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_new_model(payload['model']):
@@ -1317,6 +1388,7 @@ async def embeddings(request: Request, form_data: dict, user):
         dict: OpenAI-compatible embeddings response.
     """
     idx = 0
+    sub2api_binding = get_user_sub2api_binding(user)
     # Prepare payload/body
     body = json.dumps(form_data)
     # Find correct backend url/key based on model
@@ -1329,12 +1401,17 @@ async def embeddings(request: Request, form_data: dict, user):
     if model_id in models:
         idx = models[model_id]['urlIdx']
 
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
-    )
+    if sub2api_binding:
+        url = sub2api_binding['gateway_base_url']
+        key = sub2api_binding['api_key']
+        api_config = {'connection_type': 'sub2api', 'provider': 'sub2api'}
+    else:
+        url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+        key = request.app.state.config.OPENAI_API_KEYS[idx]
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
+        )
 
     r = None
     streaming = False
@@ -1414,12 +1491,14 @@ async def responses(
     Routes to the correct upstream backend based on the model field.
     """
     payload = form_data.model_dump(exclude_none=True)
+    sub2api_binding = get_user_sub2api_binding(user)
 
     idx = 0
     model_id = form_data.model
 
     # Enforce per-model access control
-    await check_model_access(user, await Models.get_model_by_id(model_id), BYPASS_MODEL_ACCESS_CONTROL)
+    if not sub2api_binding:
+        await check_model_access(user, await Models.get_model_by_id(model_id), BYPASS_MODEL_ACCESS_CONTROL)
 
     body = json.dumps(payload)
 
@@ -1431,12 +1510,17 @@ async def responses(
         if model_id in models:
             idx = models[model_id]['urlIdx']
 
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
-    )
+    if sub2api_binding:
+        url = sub2api_binding['gateway_base_url']
+        key = sub2api_binding['api_key']
+        api_config = {'connection_type': 'sub2api', 'provider': 'sub2api'}
+    else:
+        url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+        key = request.app.state.config.OPENAI_API_KEYS[idx]
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
+        )
 
     r = None
     streaming = False
@@ -1540,14 +1624,20 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
         if model_id in models:
             idx = models[model_id]['urlIdx']
 
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
+    sub2api_binding = get_user_sub2api_binding(user)
+    if sub2api_binding:
+        url = sub2api_binding['gateway_base_url']
+        key = sub2api_binding['api_key']
+        api_config = {'connection_type': 'sub2api', 'provider': 'sub2api'}
+    else:
+        url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+        key = request.app.state.config.OPENAI_API_KEYS[idx]
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(
+                request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+            ),  # Legacy support
+        )
 
     r = None
     streaming = False

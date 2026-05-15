@@ -48,6 +48,7 @@
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import WebSearchResults from './ResponseMessage/WebSearchResults.svelte';
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
+	import ImageGenerationGroup from './ResponseMessage/ImageGenerationGroup.svelte';
 
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 
@@ -69,7 +70,7 @@
 		id: string;
 		model: string;
 		content: string;
-		files?: { type: string; url: string }[];
+		files?: { type: string; url: string; name?: string; content_type?: string; size?: number }[];
 		timestamp: number;
 		role: string;
 		statusHistory?: {
@@ -175,6 +176,14 @@
 		(model?.info?.meta?.capabilities?.status_updates ?? true) &&
 		statusEntries.length > 0 &&
 		!(statusEntries.at(-1)?.hidden ?? false);
+
+	$: visibleFiles = message?.files?.filter((f) => ['image', 'file'].includes(f.type)) ?? [];
+	$: imageFiles = visibleFiles.filter(
+		(f) => f.type === 'image' || (f?.content_type ?? '').startsWith('image/')
+	);
+	$: nonImageFiles = visibleFiles.filter(
+		(f) => !(f.type === 'image' || (f?.content_type ?? '').startsWith('image/'))
+	);
 
 	let edit = false;
 	let editedContent = '';
@@ -699,16 +708,25 @@
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
 
-						{#if message?.files && message.files?.filter( (f) => ['image', 'file'].includes(f.type) ).length > 0}
-							<div
-								class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
-								dir={$settings?.chatDirection ?? 'auto'}
-							>
-								{#each message.files.filter((f) => ['image', 'file'].includes(f.type)) as file}
-									<div>
-										{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
-											<Image src={file.url} alt={message.content} />
-										{:else}
+						{#if visibleFiles.length > 0}
+							{#if imageFiles.length > 1}
+								<ImageGenerationGroup images={imageFiles} alt={message.content} />
+							{:else if imageFiles.length === 1}
+								<div
+									class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
+									dir={$settings?.chatDirection ?? 'auto'}
+								>
+									<Image src={imageFiles[0].url} alt={message.content} />
+								</div>
+							{/if}
+
+							{#if nonImageFiles.length > 0}
+								<div
+									class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
+									dir={$settings?.chatDirection ?? 'auto'}
+								>
+									{#each nonImageFiles as file}
+										<div>
 											<FileItem
 												item={file}
 												url={file.url}
@@ -717,10 +735,10 @@
 												size={file?.size}
 												small={true}
 											/>
-										{/if}
-									</div>
-								{/each}
-							</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
 						{/if}
 
 						{#if message?.embeds && message.embeds.length > 0}

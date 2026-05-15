@@ -66,6 +66,7 @@ from open_webui.utils.asgi_middleware import (
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
 from open_webui.utils.session_pool import get_session
+from open_webui.utils.sub2api import get_sub2api_public_config
 from open_webui.socket.main import (
     MODELS,
     app as socket_app,
@@ -2367,6 +2368,7 @@ async def get_app_config(request: Request):
             'enable_version_update_check': ENABLE_VERSION_UPDATE_CHECK,
             'enable_public_active_users_count': ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
             'enable_easter_eggs': ENABLE_EASTER_EGGS,
+            'sub2api_sso': get_sub2api_public_config(),
             **(
                 {
                     'enable_direct_connections': app.state.config.ENABLE_DIRECT_CONNECTIONS,
